@@ -152,4 +152,33 @@ def repo_default_config():
     ret.set("core", "filemode", "false")
     ret.set("core", "bare", "false")
 
-    return set
+    return ret
+
+#the repo creation is done now it is the init cmd
+argsp = argsubparsers.add_parser("init", help="Initialize a new, empty repository.")
+argsp.add_argument("path", metavar="directory", nargs="?", default=".", help="Where to create the repository.")
+
+def cmd_init(args):
+    repo_create(args.path)
+
+
+#this function helps us to find the main root directory that the other git commands will be working on and it does it by looking recursively for the .git directory
+def repo_find(path=".", required=True):
+    path = os.path.realpath(path)
+
+    #found
+    if os.path.isdir(os.path.join(path, ".git")):
+        return GitRepository(path)
+    
+    #a recursion base
+    parent = os.path.realpath(os.path.join(path, ".."))
+
+    if parent == path:
+        if required:
+            raise Exception("No git directory")
+        else:
+            return None
+    
+    #recursive case
+    return repo_find(parent, required)
+
