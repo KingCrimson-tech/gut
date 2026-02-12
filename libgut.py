@@ -111,39 +111,43 @@ def repo_dir(repo, *path, mkdir=False):
     else:
         return None
 
+
 def repo_create(path):
     repo = GitRepository(path, True)
 
-    #check if path doesnt exist or empty
+    # check if path doesnt exist or empty
     if os.path.exists(repo.worktree):
         if not os.path.isdir(repo.worktree):
             raise Exception(f"{path} is not a directory")
         if os.path.exists(repo.gitdir) and os.listdir(repo.gitdir):
-            raise Exception(f"{path} is not empty!")    
-    
+            raise Exception(f"{path} is not empty!")
+
     else:
         os.makedirs(repo.worktree)
-    
+
     assert repo_dir(repo, "branches", mkdir=True)
     assert repo_dir(repo, "objects", mkdir=True)
     assert repo_dir(repo, "refs", "tags", mkdir=True)
     assert repo_dir(repo, "refs", "heads", mkdir=True)
 
-    #.git/description
+    # .git/description
     with open(repo_file(repo, "description"), "w") as f:
-        f.write("Unnamed repository: edit this file 'description to name the repository.\n")
-    
-    #.git/HEAD
+        f.write(
+            "Unnamed repository: edit this file 'description to name the repository.\n"
+        )
+
+    # .git/HEAD
     with open(repo_file(repo, "HEAD"), "w") as f:
         f.write("ref: refs/heads/master\n")
 
     with open(repo_file(repo, "config"), "w") as f:
         config = repo_default_config()
         config.write(f)
-    
+
     return repo
 
-#INI-format config file details for the gitdir(the three fields include repoformatversion, filemode(tracking file nodes) and bare(worktree indicator))
+
+# INI-format config file details for the gitdir(the three fields include repoformatversion, filemode(tracking file nodes) and bare(worktree indicator))
 def repo_default_config():
     ret = configparser.ConfigParser()
 
@@ -154,23 +158,31 @@ def repo_default_config():
 
     return ret
 
-#the repo creation is done now it is the init cmd
+
+# the repo creation is done now it is the init cmd
 argsp = argsubparsers.add_parser("init", help="Initialize a new, empty repository.")
-argsp.add_argument("path", metavar="directory", nargs="?", default=".", help="Where to create the repository.")
+argsp.add_argument(
+    "path",
+    metavar="directory",
+    nargs="?",
+    default=".",
+    help="Where to create the repository.",
+)
+
 
 def cmd_init(args):
     repo_create(args.path)
 
 
-#this function helps us to find the main root directory that the other git commands will be working on and it does it by looking recursively for the .git directory
+# this function helps us to find the main root directory that the other git commands will be working on and it does it by looking recursively for the .git directory
 def repo_find(path=".", required=True):
     path = os.path.realpath(path)
 
-    #found
+    # found
     if os.path.isdir(os.path.join(path, ".git")):
         return GitRepository(path)
-    
-    #a recursion base
+
+    # a recursion base
     parent = os.path.realpath(os.path.join(path, ".."))
 
     if parent == path:
@@ -178,22 +190,24 @@ def repo_find(path=".", required=True):
             raise Exception("No git directory")
         else:
             return None
-    
-    #recursive case
+
+    # recursive case
     return repo_find(parent, required)
 
-''''Reading and writing objects'''
-#In git unlike typical file systems, it is a content addresses filesystem, meaning it derives its file name from the content of the file and also if the content is changed then a new file itself is created and thus a git object is just that the the file in the repo with its path determined by the contents
 
-#an object in git is represnted in a particular fashion
+"""'Reading and writing objects"""
+# In git unlike typical file systems, it is a content addresses filesystem, meaning it derives its file name from the content of the file and also if the content is changed then a new file itself is created and thus a git object is just that the the file in the repo with its path determined by the contents
 
-'''
+# an object in git is represnted in a particular fashion
+
+"""
 type(blob, commit, tag or tree), ASCII space, size of obj in ascii number, null then contents of the obj
 ex:
 00000000  63 6f 6d 6d 69 74 20 31  30 38 36 00 74 72 65 65  |commit 1086.tree|
-'''
+"""
 
-#a generic object
+
+# a generic object
 class GitObject(object):
 
     def __init__(self, data=None):
@@ -201,47 +215,168 @@ class GitObject(object):
             self.deserialize(data)
         else:
             self.init()
-    
+
     def serialize(self, repo):
-        #this function will be implenmented by subclasses coz there are diff objs
+        # this function will be implenmented by subclasses coz there are diff objs
 
         raise Exception("Todo")
 
     def deserialize(self, data):
         raise Exception("Todo")
-    
-    def init(self):
-        pass 
 
-#reading files, it requires to know its SHA-1 hash and then path is computed as : first 2 characters / rest characters as file name decompressed by zlib
+    def init(self):
+        pass
+
+
+# reading files, it requires to know its SHA-1 hash and then path is computed as : first 2 characters / rest characters as file name decompressed by zlib
+
 
 def object_read(repo, sha):
-    #read the sha from git repository repo and retuen a GitObject 
+    # read the sha from git repository repo and retuen a GitObject
     path = repo_file(repo, "objects", sha[0:2], sha[2:])
 
     if not os.path.isfile(path):
         return None
-    
+
     with open(path, "rb") as f:
         raw = zlib.decompress(f.read())
 
-        #read object type
-        x = raw.find(b' ')
+        # read object type
+        x = raw.find(b" ")
         fmt = raw[0:x]
 
-        #read and validate object size
-        y = raw.find(b'\x00', x)
+        # read and validate object size
+        y = raw.find(b"\x00", x)
         size = int(raw[x:y].decode("ascii"))
         if size != len(raw) - y - 1:
             raise Exception(f"malformed object {sha}: bad length")
-        
-        #picking constructor
+
+        # picking constructor
         match fmt:
-            case b'commit': c=GitCommit
-            case b'tree': c=GitTree
-            case b'tag' : c=GitTag
-            case b'blob': c=GitBlob
+            case b"commit":
+                c = GitCommit
+            case b"tree":
+                c = GitTree
+            case b"tag":
+                c = GitTag
+            case b"blob":
+                c = GitBlob
             case _:
                 raise Exception(f"unknown type {fmt.decode("ascii")} for object {sha}")
-            
-        return c(raw[y+1:])
+
+        return c(raw[y + 1 :])
+
+
+# writing objects
+def object_write(obj, repo=None):
+    # serialize
+    data = obj.serialize()
+    # header addition
+    result = obj.fmt = b" " + str(len(data)).encode() + b"\x00" + data
+    # hashing
+    sha = hashlib.sha1(result).hexdigest()
+
+    if repo:
+        # compute path
+        path = repo_file(repo, "objects", sha[0:2], sha[2:], mkdir=True)
+
+        if not os.path.exists(path):
+            with open(path, "wb") as f:
+                # compress and write
+                f.write(zlib.compress(result))
+
+    return sha
+
+
+# Blob format
+class GitBlob(GitObject):
+    fmt = b"blob"
+
+    def serialize(self):
+        return self.blobdata
+
+    def deserialize(self, data):
+        self.blobdata = data
+
+
+# cat-file cmd
+argsp = argsubparsers.add_parser(
+    "cat-file", help="Provide content of repository objects"
+)
+
+argsp.add_argument(
+    "type",
+    metavar="type",
+    choices=["blob", "commit", "tag", "tree"],
+    help="Specify the type",
+)
+
+argsp.add_argument("object", metavar="object", help="The object to display")
+
+
+def cmd_cat_file(args):
+    repo = repo_find()
+    cat_file(repo, args.object, fmt=args.type.encode())
+
+
+def cat_file(repo, obj, fmt=None):
+    obj = object_read(repo, object_find(repo, obj, fmt=fmt))
+    sys.stdout.buffer.write(obj.serialize())
+
+
+def object_find(repo, name, fmt=None, follow=True):
+    return name
+
+
+argsp = argsubparsers.add_parser(
+    "hash-object", help="Compute object ID and optionally creates a blob from a file"
+)
+
+argsp.add_argument(
+    "-t",
+    metavar="type",
+    dest="type",
+    choices=["blob", "commit", "tag", "tree"],
+    default="blob",
+    help="Specify the type",
+)
+
+argsp.add_argument(
+    "-w",
+    dest="write",
+    action="store_true",
+    help="Actually write the object into the database",
+)
+
+argsp.add_argument("path", help="Read object from <file>")
+
+
+def cmd_hash_object(args):
+    if args.write:
+        repo = repo_find()
+    else:
+        repo = None
+
+    with open(args.path, "rb") as fd:
+        sha = object_hash(fd, args.type.encode(), repo)
+        print(sha)
+
+
+def object_hash(fd, fmt, repo=None):
+    """Hash object, writing it to repo if provided."""
+    data = fd.read()
+
+    # Choose constructor according to fmt argument
+    match fmt:
+        case b"commit":
+            obj = GitCommit(data)
+        case b"tree":
+            obj = GitTree(data)
+        case b"tag":
+            obj = GitTag(data)
+        case b"blob":
+            obj = GitBlob(data)
+        case _:
+            raise Exception(f"Unknown type {fmt}!")
+
+    return object_write(obj, repo)
