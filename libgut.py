@@ -216,9 +216,12 @@ class GitObject(object):
         else:
             self.init()
 
-    def serialize(self, repo):
-        # this function will be implenmented by subclasses coz there are diff objs
-
+    def serialize(self):
+        # Implemented by subclasses to return the raw payload
+        # (no header). The caller (object_write) is responsible
+        # for composing the full header ("<type> <size>\x00") and
+        # hashing/compressing the result.  Keeping headers out of
+        # subclass code simplifies testing and reuse.
         raise Exception("Todo")
 
     def deserialize(self, data):
@@ -251,7 +254,10 @@ def object_read(repo, sha):
         if size != len(raw) - y - 1:
             raise Exception(f"malformed object {sha}: bad length")
 
-        # picking constructor
+        # picking constructor: we choose the appropriate Python
+        # class for the object type we just read. Note that we only
+        # inspect the header here; the constructor will receive the
+        # raw payload (after the NUL) and deserialize it.
         match fmt:
             case b"commit":
                 c = GitCommit
@@ -262,8 +268,10 @@ def object_read(repo, sha):
             case b"blob":
                 c = GitBlob
             case _:
-                raise Exception(f"unknown type {fmt.decode("ascii")} for object {sha}")
+                raise Exception(f"unknown type {fmt.decode('ascii')} for object {sha}")
 
+        # Pass only the payload (after the NUL) to the object
+        # constructor/deserialize method.
         return c(raw[y + 1 :])
 
 
@@ -272,7 +280,11 @@ def object_write(obj, repo=None):
     # serialize
     data = obj.serialize()
     # header addition
-    result = obj.fmt = b" " + str(len(data)).encode() + b"\x00" + data
+    # Compose the header as: b"<type> <size>\x00" followed by data.
+    # Important: do not mutate attributes on `obj` here; some callers
+    # may reuse object instances. Keep header construction local.
+    header = obj.fmt + b" " + str(len(data)).encode() + b"\x00"
+    result = header + data
     # hashing
     sha = hashlib.sha1(result).hexdigest()
 
@@ -387,9 +399,9 @@ def kvlm_parse(raw, start=0, dct=None):
         # You CANNOT declare the argument as dct=dict() or all call to
         # the functions will endlessly grow the same dict.
 
-    # This function is recursive: it reads a key/value pair, then call
-    # itself back with the new position.  So we first need to know
-    # where we are: at a keyword, or already in the messageQ
+    # This function is recursive: it reads a key/value pair and then
+    # recurses for the rest of the payload. It uses `None` as the
+    # dict key for the commit message (the trailing free-form text).
 
     # We search for the next space and the next newline.
     spc = raw.find(b' ', start)
@@ -414,8 +426,10 @@ def kvlm_parse(raw, start=0, dct=None):
     # we read a key-value pair and recurse for the next.
     key = raw[start:spc]
 
-    # Find the end of the value.  Continuation lines begin with a
-    # space, so we loop until we find a "\n" not followed by a space.
+    # Find the end of the value. Continuation lines begin with a
+    # space ("\n "), which are logically part of the same value;
+    # so we keep scanning until we find a newline NOT followed by
+    # a space, which marks the end of this header's value.
     end = start
     while True:
         end = raw.find(b'\n', end+1)
@@ -537,10 +551,9 @@ def tree_parse_one(raw, start=0):
     # and read the path
     path = raw[x+1:y]
 
-    # Read the SHA…
+    # Read the 20-byte SHA in network (big-endian) order and convert
+    # it to the 40-char hexadecimal string git uses.
     raw_sha = int.from_bytes(raw[y+1:y+21], "big")
-    # and convert it into an hex string, padded to 40 chars
-    # with zeros if needed.
     sha = format(raw_sha, "040x")
     return y+21, GitTreeLeaf(mode, path.decode("utf8"), sha)
 
@@ -560,6 +573,9 @@ def tree_parse(raw):
 # value, which is compared using the default rules.  So we just return
 # the leaf name, with an extra / if it's a directory.
 def tree_leaf_sort_key(leaf):
+    # To ensure directories are sorted before files with the same
+    # name prefix, append a trailing slash to directory names. This
+    # reproduces git's tree ordering rules using Python's `key`.
     if leaf.mode.startswith(b"4"):
         return leaf.path + "/"
     else:
@@ -1565,10 +1581,16 @@ def commit_create(repo, tree, parent, author, timestamp, message):
     minutes = (offset % 3600) // 60
     tz = "{}{:02}{:02}".format("+" if offset > 0 else "-", hours, minutes)
 
-    author = author + " " + int(timestamp.timestamp()) + " " + tz
+    # Build author/committer string. If `author` is None (no config
+    # provided), fall back to a harmless default. The timestamp must
+    # be represented as an integer number of seconds plus a timezone
+    # offset string, matching git's format.
+    author_name = author if author else "gut <gut@example.com>"
+    timestamp_ts = int(timestamp.timestamp())
+    author_line = f"{author_name} {timestamp_ts} {tz}"
 
-    commit.kvlm[b"author"] = author.encode("utf8")
-    commit.kvlm[b"committer"] = author.encode("utf8")
+    commit.kvlm[b"author"] = author_line.encode("utf8")
+    commit.kvlm[b"committer"] = author_line.encode("utf8")
     commit.kvlm[None] = message.encode("utf8")
 
     return object_write(commit, repo)
@@ -1594,4 +1616,4 @@ def cmd_commit(args):
             fd.write(commit + "\n")
     else: # Otherwise, we update HEAD itself.
         with open(repo_file(repo, "HEAD"), "w") as fd:
-            fd.write("\n")
+            fd.write(commit + "\n")
